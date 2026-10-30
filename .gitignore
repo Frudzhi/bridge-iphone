@@ -1,0 +1,23 @@
+# Generated Xcode project (produced from project.yml by XcodeGen)
+*.xcodeproj/
+*.xcworkspace/
+
+# Build output
+build/
+build-tests/
+simulator-devices.json
+DerivedData/
+dist/
+Payload/
+*.ipa
+
+# Xcode user data
+xcuserdata/
+*.xcuserstate
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
