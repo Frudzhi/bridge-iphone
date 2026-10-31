@@ -1,55 +1,129 @@
 import SwiftUI
+import WebKit
 
-/// First-install checkpoint. Connection adapters are not simulated.
 struct ContentView: View {
   var body: some View {
-    NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 24) {
-          HStack(spacing: 14) {
-            Image(systemName: "laptopcomputer.and.iphone")
-              .font(.system(size: 38)).foregroundStyle(.blue)
-            VStack(alignment: .leading, spacing: 5) {
-              Text("Телефон и ноутбук").font(.title2.bold())
-              Text("Подключение пока недоступно").font(.footnote).foregroundStyle(.secondary)
-            }
-          }.padding(.vertical, 12)
-          VStack(alignment: .leading, spacing: 16) {
-            Text("Порядок подключения").font(.headline)
-            connection("Bluetooth", "Рядом с ноутбуком", icon: "antenna.radiowaves.left.and.right", number: "1")
-            Divider()
-            connection("Wi-Fi", "Если Bluetooth недоступен", icon: "wifi", number: "2")
-            Divider()
-            connection("Интернет", "Когда вы в разных сетях", icon: "globe", number: "3")
-          }.padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
-          Text("При восстановлении Bluetooth приложение должно возвращаться на него автоматически.")
-            .font(.subheadline).foregroundStyle(.secondary)
-          HStack(spacing: 14) {
-            feature("Кликер", icon: "rectangle.on.rectangle")
-            feature("Тачпад", icon: "hand.draw")
+    TabView {
+      ShtabScreen().tabItem { Label("Штаб", systemImage: "square.grid.2x2.fill") }
+      NavigationStack {
+        List {
+          Section("Подключение к ноутбуку") {
+            Label("Bluetooth → Wi-Fi → интернет", systemImage: "antenna.radiowaves.left.and.right")
+            Text("Прямой Bluetooth ещё в разработке.").foregroundStyle(.secondary)
           }
-          Text("Первая проверочная сборка: установка и запуск. Подключение к Windows и управление ещё не включены.")
-            .font(.footnote).foregroundStyle(.secondary)
-        }.padding(20)
-      }.background(Color(.systemGroupedBackground)).navigationTitle("Bridge")
+          Section("Управление") {
+            Text("Кликер и тачпад через интернет: открой «Штаб» → «Пульт».")
+          }
+        }.navigationTitle("Bridge")
+      }.tabItem { Label("Bridge", systemImage: "laptopcomputer.and.iphone") }
     }
   }
-  private func connection(_ title: String, _ description: String, icon: String, number: String) -> some View {
-    HStack(spacing: 14) {
-      Image(systemName: icon).font(.title3).foregroundStyle(.blue).frame(width: 28)
-      VStack(alignment: .leading, spacing: 3) {
-        Text(title).font(.headline)
-        Text(description).font(.footnote).foregroundStyle(.secondary)
+}
+
+enum ShtabDestination {
+  static let home = URL(string: "https://shtab.bagavievalexe.workers.dev")!
+  static func isInternal(_ url: URL) -> Bool {
+    if url.scheme == "blob" {
+      guard let origin = URL(string: String(url.absoluteString.dropFirst(5))) else { return false }
+      return isInternal(origin)
+    }
+    return url.scheme == "https" && url.host == home.host &&
+      (url.port == nil || url.port == 443) && url.user == nil && url.password == nil
+  }
+}
+
+@MainActor
+final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+  let webView: WKWebView
+  @Published var loading = true
+  @Published var failure: String?
+  override init() {
+    let config = WKWebViewConfiguration()
+    config.websiteDataStore = .default()
+    webView = WKWebView(frame: .zero, configuration: config)
+    super.init()
+    webView.navigationDelegate = self
+    webView.uiDelegate = self
+    webView.allowsBackForwardNavigationGestures = true
+    reload()
+  }
+  func reload() {
+    failure = nil
+    loading = true
+    if webView.url == nil { webView.load(URLRequest(url: ShtabDestination.home)) }
+    else { webView.reload() }
+  }
+  func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+    loading = true
+    failure = nil
+  }
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading = false }
+  private func fail(_ error: Error) {
+    guard (error as NSError).code != NSURLErrorCancelled else { return }
+    loading = false
+    failure = "Проверь подключение к интернету и попробуй снова."
+  }
+  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail(error) }
+  func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    loading = false
+    failure = "Штаб был выгружен из памяти. Нажми «Повторить», чтобы открыть его снова."
+  }
+  func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+               decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+    if response.isForMainFrame, let http = response.response as? HTTPURLResponse, http.statusCode >= 400 {
+      loading = false
+      failure = "Сервер Штаба недоступен (" + String(http.statusCode) + "). Попробуй снова немного позже."
+      decisionHandler(.cancel)
+    } else { decisionHandler(.allow) }
+  }
+  func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+               decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+    guard let url = action.request.url else { decisionHandler(.cancel); return }
+    if ShtabDestination.isInternal(url) {
+      if action.targetFrame == nil {
+        webView.load(action.request)
+        decisionHandler(.cancel)
+      } else { decisionHandler(.allow) }
+      return
+    }
+    if action.navigationType == .linkActivated,
+       ["https", "http", "mailto", "tel", "tg"].contains(url.scheme ?? "") {
+      UIApplication.shared.open(url)
+    }
+    decisionHandler(.cancel)
+  }
+}
+
+private struct ShtabWebView: UIViewRepresentable {
+  let browser: ShtabBrowser
+  func makeUIView(context: Context) -> WKWebView { browser.webView }
+  func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+
+private struct ShtabScreen: View {
+  @StateObject private var browser = ShtabBrowser()
+  var body: some View {
+    NavigationStack {
+      ZStack {
+        ShtabWebView(browser: browser)
+        if browser.loading { ProgressView().padding(16).background(.regularMaterial, in: Capsule()) }
+        if let failure = browser.failure {
+          ContentUnavailableView {
+            Label("Не удалось открыть Штаб", systemImage: "wifi.exclamationmark")
+          } description: { Text(failure) } actions: {
+            Button("Повторить") { browser.reload() }.buttonStyle(.borderedProminent)
+          }.background(Color(.systemBackground))
+        }
       }
-      Spacer()
-      Text(number).font(.caption.bold()).foregroundStyle(.secondary)
+      .navigationTitle("Штаб")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button { browser.reload() } label: { Image(systemName: "arrow.clockwise") }
+            .accessibilityLabel("Обновить Штаб")
+        }
+      }
     }
-  }
-  private func feature(_ title: String, icon: String) -> some View {
-    VStack(spacing: 10) {
-      Image(systemName: icon).font(.title2)
-      Text(title).font(.headline)
-    }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 24)
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
   }
 }
