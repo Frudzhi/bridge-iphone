@@ -2,30 +2,22 @@ import SwiftUI
 import WebKit
 
 struct ContentView: View {
-  @AppStorage("bridgeAppearance") private var appearance = "system"
-  private var selectedScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
+  @StateObject private var browser = ShtabBrowser()
   var body: some View {
-    TabView {
-      ShtabScreen().tabItem { Label("Штаб", systemImage: "square.grid.2x2.fill") }
-      NavigationStack {
-        List {
-          Section("Подключение к ноутбуку") {
-            Label("Bluetooth → Wi-Fi → интернет", systemImage: "antenna.radiowaves.left.and.right")
-            Text("Прямой Bluetooth ещё в разработке.").foregroundStyle(.secondary)
-          }
-          Section("Оформление") {
-            Picker("Тема", selection: $appearance) {
-              Text("Системная").tag("system")
-              Text("Светлая").tag("light")
-              Text("Тёмная").tag("dark")
-            }
-          }
-          Section("Управление") {
-            Text("Кликер и тачпад через интернет: открой «Штаб» → «Пульт».")
-          }
-        }.navigationTitle("Bridge")
-      }.tabItem { Label("Bridge", systemImage: "laptopcomputer.and.iphone") }
-    }.preferredColorScheme(selectedScheme)
+    ZStack {
+      Color(.systemBackground).ignoresSafeArea()
+      ShtabWebView(browser: browser).ignoresSafeArea(.container, edges: .bottom)
+      if browser.loading {
+        ProgressView().padding(16).background(.regularMaterial, in: Capsule())
+      }
+      if let failure = browser.failure {
+        ContentUnavailableView {
+          Label("Нет связи со Штабом", systemImage: "wifi.exclamationmark")
+        } description: { Text(failure) } actions: {
+          Button("Повторить") { browser.reload() }.buttonStyle(.borderedProminent)
+        }.background(Color(.systemBackground))
+      }
+    }.preferredColorScheme(browser.preferredScheme)
   }
 }
 
@@ -46,21 +38,57 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   let webView: WKWebView
   @Published var loading = true
   @Published var failure: String?
-  private var theme = "light"
-  func setTheme(_ scheme: ColorScheme) {
-    theme = scheme == .dark ? "dark" : "light"
-    webView.overrideUserInterfaceStyle = scheme == .dark ? .dark : .light
-    applyTheme()
+  @Published var preferredScheme: ColorScheme?
+  private let refreshControl = UIRefreshControl()
+
+  func receiveTheme(_ message: WKScriptMessage) {
+    guard message.frameInfo.isMainFrame,
+          let url = message.frameInfo.request.url, ShtabDestination.isInternal(url),
+          let theme = message.body as? String, ["auto", "light", "dark"].contains(theme) else { return }
+    preferredScheme = theme == "dark" ? .dark : theme == "light" ? .light : nil
+    webView.overrideUserInterfaceStyle = theme == "dark" ? .dark : theme == "light" ? .light : .unspecified
+    UserDefaults.standard.set(theme, forKey: "shtabAppearance")
   }
-  private func applyTheme() {
-    let script = "document.documentElement.dataset.theme = '" + theme + "'; try { localStorage.setItem('shtab_theme', '" + theme + "'); } catch(e) {}"
-    webView.evaluateJavaScript(script, completionHandler: nil)
+
+  // All controls remain in Shtab. The only script message accepted by iOS is
+  // a three-value appearance preference; scripts cannot issue native input.
+  private static let integrationScript = """
+    (() => {
+      const syncTheme = () => {
+        const theme = document.documentElement.dataset.theme || 'auto';
+        if (['auto','light','dark'].includes(theme)) window.webkit.messageHandlers.shtabAppearance.postMessage(theme);
+      };
+      const integrate = () => {
+        const label = document.querySelector('#nav [data-pc="bridge"] span');
+        if (label && label.textContent !== 'Bridge') label.textContent = 'Bridge';
+      };
+      new MutationObserver(syncTheme).observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
+      new MutationObserver(integrate).observe(document.body, {childList:true, subtree:true});
+      syncTheme(); integrate();
+    })();
+    """
+
+  @objc private func pulledToRefresh() {
+    // Do not interrupt the remote-control panel or an unfinished edit form.
+    webView.evaluateJavaScript("!!document.querySelector('#sheet:not([hidden])')") { [weak self] result, _ in
+      guard let self = self else { return }
+      if result as? Bool == true { self.refreshControl.endRefreshing() }
+      else { self.reload() }
+    }
   }
   override init() {
     let config = WKWebViewConfiguration()
     config.websiteDataStore = .default()
+    config.userContentController.addUserScript(WKUserScript(source: Self.integrationScript,
+      injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     webView = WKWebView(frame: .zero, configuration: config)
     super.init()
+    let saved = UserDefaults.standard.string(forKey: "shtabAppearance")
+    preferredScheme = saved == "dark" ? .dark : saved == "light" ? .light : nil
+    config.userContentController.add(ShtabThemeHandler(owner: self), name: "shtabAppearance")
+    refreshControl.addTarget(self, action: #selector(pulledToRefresh), for: .valueChanged)
+    webView.scrollView.refreshControl = refreshControl
+    webView.scrollView.alwaysBounceVertical = true
     webView.navigationDelegate = self
     webView.uiDelegate = self
     webView.allowsBackForwardNavigationGestures = true
@@ -76,22 +104,25 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     loading = true
     failure = nil
   }
-  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading = false; applyTheme() }
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading = false; refreshControl.endRefreshing() }
   private func fail(_ error: Error) {
     guard (error as NSError).code != NSURLErrorCancelled else { return }
     loading = false
+    refreshControl.endRefreshing()
     failure = "Проверь подключение к интернету и попробуй снова."
   }
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail(error) }
   func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
   func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
     loading = false
+    refreshControl.endRefreshing()
     failure = "Штаб был выгружен из памяти. Нажми «Повторить», чтобы открыть его снова."
   }
   func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
     if response.isForMainFrame, let http = response.response as? HTTPURLResponse, http.statusCode >= 400 {
       loading = false
+      refreshControl.endRefreshing()
       failure = "Сервер Штаба недоступен (" + String(http.statusCode) + "). Попробуй снова немного позже."
       decisionHandler(.cancel)
     } else { decisionHandler(.allow) }
@@ -120,32 +151,11 @@ private struct ShtabWebView: UIViewRepresentable {
   func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
 
-private struct ShtabScreen: View {
-  @Environment(\.colorScheme) private var colorScheme
-  @StateObject private var browser = ShtabBrowser()
-  var body: some View {
-    NavigationStack {
-      ZStack {
-        ShtabWebView(browser: browser)
-          .onAppear { browser.setTheme(colorScheme) }
-          .onChange(of: colorScheme) { _, value in browser.setTheme(value) }
-        if browser.loading { ProgressView().padding(16).background(.regularMaterial, in: Capsule()) }
-        if let failure = browser.failure {
-          ContentUnavailableView {
-            Label("Не удалось открыть Штаб", systemImage: "wifi.exclamationmark")
-          } description: { Text(failure) } actions: {
-            Button("Повторить") { browser.reload() }.buttonStyle(.borderedProminent)
-          }.background(Color(.systemBackground))
-        }
-      }
-      .navigationTitle("Штаб")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button { browser.reload() } label: { Image(systemName: "arrow.clockwise") }
-            .accessibilityLabel("Обновить Штаб")
-        }
-      }
-    }
+@MainActor
+private final class ShtabThemeHandler: NSObject, WKScriptMessageHandler {
+  weak var owner: ShtabBrowser?
+  init(owner: ShtabBrowser) { self.owner = owner; super.init() }
+  func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+    owner?.receiveTheme(message)
   }
 }
