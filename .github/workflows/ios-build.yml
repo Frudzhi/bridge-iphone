@@ -1,0 +1,37 @@
+name: iOS Build (Unsigned IPA)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build unsigned app
+        run: |
+          set -euo pipefail
+          xcodebuild -project BridgePhone.xcodeproj -scheme BridgePhone -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build clean build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Test transport selection
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available -j > simulator-devices.json
+          SIM_ID=$(python3 -c 'import json; d=json.load(open("simulator-devices.json")); print(next(x["udid"] for group in d["devices"].values() for x in group if "iPhone" in x["name"] and x.get("isAvailable",False)))')
+          xcodebuild test -project BridgePhone.xcodeproj -scheme BridgePhone -destination "platform=iOS Simulator,id=$SIM_ID" -derivedDataPath build-tests CODE_SIGNING_ALLOWED=NO
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          mkdir -p Payload dist
+          cp -R build/Build/Products/Release-iphoneos/BridgePhone.app Payload/
+          zip -qq -r dist/BridgePhone.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BridgePhone-unsigned
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 14
