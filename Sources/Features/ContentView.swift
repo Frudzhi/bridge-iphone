@@ -2,6 +2,7 @@ import SwiftUI
 import WebKit
 
 struct ContentView: View {
+  @Environment(\.scenePhase) private var scenePhase
   @StateObject private var browser = ShtabBrowser()
   var body: some View {
     ZStack {
@@ -18,6 +19,9 @@ struct ContentView: View {
         }.background(Color(.systemBackground))
       }
     }.preferredColorScheme(browser.preferredScheme)
+      .sheet(isPresented: $browser.bluetoothSetup) { BluetoothSetup(control: browser.bluetooth) }
+      .onAppear { browser.bluetooth.setActive(true) }
+      .onChange(of: scenePhase) { _, value in browser.bluetooth.setActive(value != .background) }
   }
 }
 
@@ -39,6 +43,8 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   @Published var loading = true
   @Published var failure: String?
   @Published var preferredScheme: ColorScheme?
+  @Published var bluetoothSetup = false
+  let bluetooth = BluetoothControl()
   private let refreshControl = UIRefreshControl()
 
   func receiveTheme(_ message: WKScriptMessage) {
@@ -59,9 +65,14 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         if (['auto','light','dark'].includes(theme)) window.webkit.messageHandlers.shtabAppearance.postMessage(theme);
       };
       const integrate = () => {
-        const label = document.querySelector('#nav [data-pc="bridge"] span');
-        if (label && label.textContent !== 'Bridge') label.textContent = 'Bridge';
+        document.querySelector('#nav [data-pc="bridge"]')?.remove();
       };
+      let viewport = document.querySelector('meta[name="viewport"]');
+      if (!viewport) { viewport = document.createElement('meta'); viewport.name = 'viewport'; document.head.append(viewport); }
+      viewport.content = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
+      const style = document.createElement('style');
+      style.textContent = 'html { touch-action: manipulation; } input, textarea, select { font-size:16px!important; }';
+      document.head.append(style);
       new MutationObserver(syncTheme).observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
       new MutationObserver(integrate).observe(document.body, {childList:true, subtree:true});
       syncTheme(); integrate();
@@ -81,14 +92,19 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     config.websiteDataStore = .default()
     config.userContentController.addUserScript(WKUserScript(source: Self.integrationScript,
       injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+    config.userContentController.addUserScript(WKUserScript(source: BridgeWebIntegration.script,
+      injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     webView = WKWebView(frame: .zero, configuration: config)
     super.init()
     let saved = UserDefaults.standard.string(forKey: "shtabAppearance")
     preferredScheme = saved == "dark" ? .dark : saved == "light" ? .light : nil
     config.userContentController.add(ShtabThemeHandler(owner: self), name: "shtabAppearance")
+    config.userContentController.addScriptMessageHandler(BridgeInputHandler(owner:self), contentWorld:.page, name:"bridgeControl")
+    bluetooth.changed = { [weak self] in self?.publishBluetoothState() }
     refreshControl.addTarget(self, action: #selector(pulledToRefresh), for: .valueChanged)
     webView.scrollView.refreshControl = refreshControl
     webView.scrollView.alwaysBounceVertical = true
+    webView.scrollView.pinchGestureRecognizer?.isEnabled = false
     webView.navigationDelegate = self
     webView.uiDelegate = self
     webView.allowsBackForwardNavigationGestures = true
@@ -104,7 +120,27 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     loading = true
     failure = nil
   }
-  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading = false; refreshControl.endRefreshing() }
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    loading = false; refreshControl.endRefreshing(); publishBluetoothState()
+  }
+  private func publishBluetoothState() {
+    guard let data = try? JSONSerialization.data(withJSONObject:["ready":bluetooth.ready,"name":bluetooth.name,"status":bluetooth.status]),
+          let json = String(data:data, encoding:.utf8) else { return }
+    webView.evaluateJavaScript("window.__setBridgeNativeState?.(" + json + ")", completionHandler:nil)
+  }
+  func handleControl(_ message: WKScriptMessage, reply:@escaping (Any?,String?) -> Void) {
+    guard message.frameInfo.isMainFrame, let url = message.frameInfo.request.url,
+          ShtabDestination.isInternal(url), let body = message.body as? [String:Any], let op = body["op"] as? String else {
+      reply(nil,"Недопустимый запрос"); return
+    }
+    if op == "setup" {
+      bluetooth.configure(key:body["key"] as? String)
+      bluetoothSetup = true
+      reply(["ok":true],nil)
+    } else if op == "input", let events = body["events"] as? [[String:Any]] {
+      bluetooth.send(events:events, reply:reply)
+    } else { reply(nil,"Недопустимая команда") }
+  }
   private func fail(_ error: Error) {
     guard (error as NSError).code != NSURLErrorCancelled else { return }
     loading = false
@@ -157,5 +193,16 @@ private final class ShtabThemeHandler: NSObject, WKScriptMessageHandler {
   init(owner: ShtabBrowser) { self.owner = owner; super.init() }
   func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
     owner?.receiveTheme(message)
+  }
+}
+
+@MainActor
+private final class BridgeInputHandler: NSObject, WKScriptMessageHandlerWithReply {
+  weak var owner: ShtabBrowser?
+  init(owner:ShtabBrowser) { self.owner = owner; super.init() }
+  func userContentController(_ userContentController:WKUserContentController, didReceive message:WKScriptMessage,
+                             replyHandler:@escaping (Any?,String?) -> Void) {
+    guard let owner = owner else { replyHandler(nil,"Приложение закрыто"); return }
+    owner.handleControl(message, reply:replyHandler)
   }
 }
