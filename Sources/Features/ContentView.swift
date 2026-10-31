@@ -2,6 +2,8 @@ import SwiftUI
 import WebKit
 
 struct ContentView: View {
+  @AppStorage("bridgeAppearance") private var appearance = "system"
+  private var selectedScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
   var body: some View {
     TabView {
       ShtabScreen().tabItem { Label("Штаб", systemImage: "square.grid.2x2.fill") }
@@ -11,12 +13,19 @@ struct ContentView: View {
             Label("Bluetooth → Wi-Fi → интернет", systemImage: "antenna.radiowaves.left.and.right")
             Text("Прямой Bluetooth ещё в разработке.").foregroundStyle(.secondary)
           }
+          Section("Оформление") {
+            Picker("Тема", selection: $appearance) {
+              Text("Системная").tag("system")
+              Text("Светлая").tag("light")
+              Text("Тёмная").tag("dark")
+            }
+          }
           Section("Управление") {
             Text("Кликер и тачпад через интернет: открой «Штаб» → «Пульт».")
           }
         }.navigationTitle("Bridge")
       }.tabItem { Label("Bridge", systemImage: "laptopcomputer.and.iphone") }
-    }
+    }.preferredColorScheme(selectedScheme)
   }
 }
 
@@ -37,6 +46,16 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   let webView: WKWebView
   @Published var loading = true
   @Published var failure: String?
+  private var theme = "light"
+  func setTheme(_ scheme: ColorScheme) {
+    theme = scheme == .dark ? "dark" : "light"
+    webView.overrideUserInterfaceStyle = scheme == .dark ? .dark : .light
+    applyTheme()
+  }
+  private func applyTheme() {
+    let script = "document.documentElement.dataset.theme = '" + theme + "'; try { localStorage.setItem('shtab_theme', '" + theme + "'); } catch(e) {}"
+    webView.evaluateJavaScript(script, completionHandler: nil)
+  }
   override init() {
     let config = WKWebViewConfiguration()
     config.websiteDataStore = .default()
@@ -57,7 +76,7 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     loading = true
     failure = nil
   }
-  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading = false }
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading = false; applyTheme() }
   private func fail(_ error: Error) {
     guard (error as NSError).code != NSURLErrorCancelled else { return }
     loading = false
@@ -102,11 +121,14 @@ private struct ShtabWebView: UIViewRepresentable {
 }
 
 private struct ShtabScreen: View {
+  @Environment(\.colorScheme) private var colorScheme
   @StateObject private var browser = ShtabBrowser()
   var body: some View {
     NavigationStack {
       ZStack {
         ShtabWebView(browser: browser)
+          .onAppear { browser.setTheme(colorScheme) }
+          .onChange(of: colorScheme) { _, value in browser.setTheme(value) }
         if browser.loading { ProgressView().padding(16).background(.regularMaterial, in: Capsule()) }
         if let failure = browser.failure {
           ContentUnavailableView {
