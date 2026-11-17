@@ -6,7 +6,12 @@ import SwiftUI
 struct BridgePhoneApp: App {
   var body: some Scene {
     WindowGroup {
-      ContentView()
+      if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        // Pure model tests do not need a live WebKit/Bluetooth application host.
+        Color.clear
+      } else {
+        ContentView()
+      }
     }
   }
 }
