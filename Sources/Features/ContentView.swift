@@ -46,6 +46,7 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   @Published var bluetoothSetup = false
   let bluetooth = BluetoothControl()
   private let refreshControl = UIRefreshControl()
+  private var showingBundledPage = false
 
   func receiveTheme(_ message: WKScriptMessage) {
     guard message.frameInfo.isMainFrame,
@@ -113,8 +114,25 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   func reload() {
     failure = nil
     loading = true
-    if webView.url == nil { webView.load(URLRequest(url: ShtabDestination.home)) }
-    else { webView.reload() }
+    let current = webView.url ?? ShtabDestination.home
+    let url = ShtabDestination.isInternal(current) ? current : ShtabDestination.home
+    showingBundledPage = false
+    webView.load(URLRequest(url: url, timeoutInterval: 8))
+  }
+
+  private func openBundledPage() {
+    guard !showingBundledPage,
+          let resource = Bundle.main.url(forResource: "ShtabOffline", withExtension: "html"),
+          let html = try? String(contentsOf: resource, encoding: .utf8) else {
+      loading = false
+      refreshControl.endRefreshing()
+      failure = "Не удалось открыть Штаб. Попробуй ещё раз."
+      return
+    }
+    showingBundledPage = true
+    // Use the live HTTPS origin so the offline shell shares the existing login,
+    // local cache, and pending changes with the online page.
+    webView.loadSimulatedRequest(URLRequest(url: ShtabDestination.home), responseHTML: html)
   }
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
     loading = true
@@ -143,9 +161,7 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   }
   private func fail(_ error: Error) {
     guard (error as NSError).code != NSURLErrorCancelled else { return }
-    loading = false
-    refreshControl.endRefreshing()
-    failure = "Проверь подключение к интернету и попробуй снова."
+    openBundledPage()
   }
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail(error) }
   func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
@@ -157,10 +173,8 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
     if response.isForMainFrame, let http = response.response as? HTTPURLResponse, http.statusCode >= 400 {
-      loading = false
-      refreshControl.endRefreshing()
-      failure = "Сервер Штаба недоступен (" + String(http.statusCode) + "). Попробуй снова немного позже."
       decisionHandler(.cancel)
+      openBundledPage()
     } else { decisionHandler(.allow) }
   }
   func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
