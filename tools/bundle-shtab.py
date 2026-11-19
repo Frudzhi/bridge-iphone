@@ -68,13 +68,14 @@ html = html.replace("</body>", """<script>
 window.__shtabSync = () => {
   if (!S.key || document.visibilityState !== 'visible') return;
   void flushTasks();
+  void refresh();
   void refreshHub();
-  if (S.view === 'rr') {
-    void rrRefresh();
-    if (S.rrTab === 'posts') void rpLoad();
-  }
+  if (['camp', 'schedule'].includes(S.view)) void rrRefresh();
+  if (['camp', 'posts'].includes(S.view)) void rpLoad();
 };
-setInterval(() => { if (S.offline) window.__shtabSync(); }, 15000);
+setInterval(() => {
+  if (S.offline || taskQueue?.pending().length || (hubOutbox && !hubConflict)) window.__shtabSync();
+}, 15000);
 </script>
 </body>""")
 font_licenses = "\n\n".join((web / path).read_text(encoding="utf-8") for path in
