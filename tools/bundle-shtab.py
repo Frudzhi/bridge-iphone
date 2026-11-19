@@ -59,4 +59,7 @@ html = re.sub(r'<link rel="stylesheet" href="/([^"?]+)(?:\?[^"]*)?">', inline_st
 html = re.sub(r'<link rel="(?:manifest|icon|apple-touch-icon|preload)"[^>]*>\n?', "", html)
 html = html.replace("</head>", '<script type="importmap">' +
                     json.dumps({"imports": modules}) + "</script>\n</head>")
+font_licenses = "\n\n".join((web / path).read_text(encoding="utf-8") for path in
+                            ("fonts/OFL-Manrope.txt", "fonts/OFL-Unbounded.txt"))
+html = html.replace("</html>", "<!--\n" + re.sub(r"(?m)[ \t]+$", "", font_licenses) + "\n-->\n</html>")
 output.write_text(re.sub(r"(?m)^[ \t]+$", "", html), encoding="utf-8", newline="\n")
