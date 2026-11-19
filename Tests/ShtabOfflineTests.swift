@@ -16,6 +16,10 @@ final class ShtabOfflineTests: XCTestCase {
       localStorage.setItem("shtab_view", "home");
       """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
 
+    let received = expectation(description: "Offline page rendered")
+    let result = OfflineResult(received)
+    config.userContentController.add(result, name: "offlineTest")
+
     let view = WKWebView(frame: .zero, configuration: config)
     let loaded = expectation(description: "Bundled page loaded")
     let observer = PageLoadObserver(loaded)
@@ -24,17 +28,21 @@ final class ShtabOfflineTests: XCTestCase {
     await fulfillment(of: [loaded], timeout: 15)
     XCTAssertNil(observer.error)
 
-    let result = try await view.callAsyncJavaScript("""
-      await Promise.all([plannerReady, proposalReady, taskQueueReady, hubSync]);
-      return {
-        origin: location.origin,
-        signedIn: S.key === "offline-test-fixture",
-        cached: Array.isArray(S.data?.tasks),
-        offline: S.offline,
-        rendered: !document.querySelector("#nav").hidden
-      };
-      """, arguments: [:], in: nil, contentWorld: .page)
-    let state = try XCTUnwrap(result as? [String: Any])
+    view.evaluateJavaScript("""
+      Promise.all([plannerReady, proposalReady, taskQueueReady, hubSync]).then(() => {
+        window.webkit.messageHandlers.offlineTest.postMessage({
+          origin: location.origin,
+          signedIn: S.key === "offline-test-fixture",
+          cached: Array.isArray(S.data?.tasks),
+          offline: S.offline,
+          rendered: !document.querySelector("#nav").hidden
+        });
+      }, error => window.webkit.messageHandlers.offlineTest.postMessage({error: String(error)}));
+      void 0;
+      """, completionHandler: nil)
+    await fulfillment(of: [received], timeout: 15)
+    let state = try XCTUnwrap(result.state)
+    XCTAssertNil(state["error"])
     XCTAssertEqual(state["origin"] as? String, ShtabDestination.home.absoluteString)
     for key in ["signedIn", "cached", "offline", "rendered"] {
       XCTAssertEqual(state[key] as? Bool, true, key)
@@ -58,5 +66,20 @@ private final class PageLoadObserver: NSObject, WKNavigationDelegate {
   func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
     self.error = error
     loaded.fulfill()
+  }
+}
+
+@MainActor
+private final class OfflineResult: NSObject, WKScriptMessageHandler {
+  private let received: XCTestExpectation
+  private(set) var state: [String: Any]?
+
+  init(_ received: XCTestExpectation) {
+    self.received = received
+  }
+
+  func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+    state = message.body as? [String: Any]
+    received.fulfill()
   }
 }
