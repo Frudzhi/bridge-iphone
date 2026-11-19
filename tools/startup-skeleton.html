@@ -1,0 +1,73 @@
+<style>
+  #app:not(:empty) + .shtab-startup { display: none; }
+  .shtab-startup {
+    --placeholder: #dce3f0;
+    --surface: #fff;
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    background: #f5f6fa;
+    padding: 18px 16px 88px;
+    z-index: 3;
+    pointer-events: none;
+  }
+  html[data-theme="dark"] .shtab-startup {
+    --placeholder: #353f58;
+    --surface: #19233d;
+    background: #10182c;
+  }
+  .shtab-startup__body { max-width: 520px; margin: auto; display: grid; gap: 12px; }
+  .shtab-startup i { display: block; height: 10px; border-radius: 99px; background: var(--placeholder); }
+  .shtab-startup__header { height: 40px; display: flex; align-items: center; justify-content: space-between; }
+  .shtab-startup__header i:first-child { width: 106px; height: 21px; }
+  .shtab-startup__header i:last-child { width: 34px; height: 34px; }
+  .shtab-startup__day {
+    min-height: 186px;
+    border-radius: 24px;
+    background: #2d5bff;
+    padding: 20px;
+    display: grid;
+    align-content: center;
+    gap: 13px;
+    --placeholder: #ffffff38;
+  }
+  .shtab-startup__day i:nth-child(1) { width: 26%; }
+  .shtab-startup__day i:nth-child(2) { width: 62%; height: 26px; }
+  .shtab-startup__day i:nth-child(3) { width: 43%; }
+  .shtab-startup__capture, .shtab-startup__list, .shtab-startup__week, .shtab-startup__nav {
+    background: var(--surface);
+    border-radius: 16px;
+    padding: 14px;
+  }
+  .shtab-startup__capture { display: flex; align-items: center; gap: 12px; }
+  .shtab-startup__capture i:first-child { width: 32px; height: 32px; background: #ff4f1a55; }
+  .shtab-startup__capture i:last-child { width: 43%; }
+  .shtab-startup__week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 7px; }
+  .shtab-startup__week i { height: 42px; border-radius: 10px; opacity: .58; }
+  .shtab-startup__week i:nth-child(4) { background: #2d5bff4d; opacity: 1; }
+  .shtab-startup__list { display: grid; align-content: center; min-height: 136px; gap: 14px; }
+  .shtab-startup__list i:first-child { width: 30%; height: 15px; margin-bottom: 5px; }
+  .shtab-startup__list i:nth-child(2) { width: 68%; }
+  .shtab-startup__list i:nth-child(3) { width: 52%; }
+  .shtab-startup__nav {
+    position: absolute;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(calc(100% - 32px), 520px);
+    display: flex;
+    justify-content: space-around;
+  }
+  .shtab-startup__nav i { width: 21px; height: 21px; border-radius: 7px; }
+  .shtab-startup__nav i:first-child { background: #2d5bff4d; }
+</style>
+<div class="shtab-startup" aria-hidden="true">
+  <div class="shtab-startup__body">
+    <div class="shtab-startup__header"><i></i><i></i></div>
+    <div class="shtab-startup__day"><i></i><i></i><i></i></div>
+    <div class="shtab-startup__capture"><i></i><i></i></div>
+    <div class="shtab-startup__week"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="shtab-startup__list"><i></i><i></i><i></i></div>
+  </div>
+  <div class="shtab-startup__nav"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+</div>

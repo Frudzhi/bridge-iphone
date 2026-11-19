@@ -8,12 +8,9 @@ struct ContentView: View {
     ZStack {
       Color(.systemBackground).ignoresSafeArea()
       ShtabWebView(browser: browser).ignoresSafeArea(.container, edges: .bottom)
-      if browser.loading {
-        ProgressView().padding(16).background(.regularMaterial, in: Capsule())
-      }
       if let failure = browser.failure {
         ContentUnavailableView {
-          Label("Нет связи со Штабом", systemImage: "wifi.exclamationmark")
+          Label("Штаб не открылся", systemImage: "exclamationmark.circle")
         } description: { Text(failure) } actions: {
           Button("Повторить") { browser.reload() }.buttonStyle(.borderedProminent)
         }.background(Color(.systemBackground))
@@ -40,13 +37,12 @@ enum ShtabDestination {
 @MainActor
 final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
   let webView: WKWebView
-  @Published var loading = true
   @Published var failure: String?
   @Published var preferredScheme: ColorScheme?
   @Published var bluetoothSetup = false
   let bluetooth = BluetoothControl()
   private let refreshControl = UIRefreshControl()
-  private var showingBundledPage = false
+  private var bundledNavigation: WKNavigation?
 
   func receiveTheme(_ message: WKScriptMessage) {
     guard message.frameInfo.isMainFrame,
@@ -82,12 +78,17 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
   @objc private func pulledToRefresh() {
     // Do not interrupt the remote-control panel or an unfinished edit form.
-    webView.evaluateJavaScript("!!document.querySelector('#sheet:not([hidden])')") { [weak self] result, _ in
-      guard let self = self else { return }
-      if result as? Bool == true { self.refreshControl.endRefreshing() }
-      else { self.reload() }
+    webView.evaluateJavaScript("""
+      if (!document.querySelector('#sheet:not([hidden])')) {
+        if (window.__shtabSync) window.__shtabSync();
+        else if (typeof refresh === 'function') refresh();
+      }
+      void 0;
+      """) { [weak self] _, _ in
+      self?.refreshControl.endRefreshing()
     }
   }
+
   override init() {
     let config = WKWebViewConfiguration()
     config.websiteDataStore = .default()
@@ -113,34 +114,21 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
   }
   func reload() {
     failure = nil
-    loading = true
-    let current = webView.url ?? ShtabDestination.home
-    let url = ShtabDestination.isInternal(current) ? current : ShtabDestination.home
-    showingBundledPage = false
-    webView.load(URLRequest(url: url, timeoutInterval: 8))
-  }
-
-  private func openBundledPage() {
-    guard !showingBundledPage,
-          let resource = Bundle.main.url(forResource: "ShtabOffline", withExtension: "html"),
+    guard let resource = Bundle.main.url(forResource: "ShtabOffline", withExtension: "html"),
           let html = try? String(contentsOf: resource, encoding: .utf8) else {
-      loading = false
-      refreshControl.endRefreshing()
-      failure = "Не удалось открыть Штаб. Попробуй ещё раз."
+      showLoadFailure()
       return
     }
-    showingBundledPage = true
-    // Use the live HTTPS origin so the offline shell shares the existing login,
-    // local cache, and pending changes with the online page.
-    webView.loadSimulatedRequest(URLRequest(url: ShtabDestination.home), responseHTML: html)
+    // The page renders its cache first and synchronizes in place on the live origin.
+    bundledNavigation = webView.loadSimulatedRequest(URLRequest(url: ShtabDestination.home), responseHTML: html)
   }
-  func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-    loading = true
-    failure = nil
-  }
+
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-    loading = false; refreshControl.endRefreshing(); publishBluetoothState()
+    failure = nil
+    refreshControl.endRefreshing()
+    publishBluetoothState()
   }
+
   private func publishBluetoothState() {
     guard let data = try? JSONSerialization.data(withJSONObject:["ready":bluetooth.ready,"name":bluetooth.name,"status":bluetooth.status]),
           let json = String(data:data, encoding:.utf8) else { return }
@@ -159,22 +147,31 @@ final class ShtabBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUI
       bluetooth.send(events:events, reply:reply)
     } else { reply(nil,"Недопустимая команда") }
   }
-  private func fail(_ error: Error) {
-    guard (error as NSError).code != NSURLErrorCancelled else { return }
-    openBundledPage()
-  }
-  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail(error) }
-  func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail(error) }
-  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-    loading = false
+  private func showLoadFailure() {
     refreshControl.endRefreshing()
-    failure = "Штаб был выгружен из памяти. Нажми «Повторить», чтобы открыть его снова."
+    failure = "Не удалось открыть Штаб. Попробуй ещё раз."
   }
+
+  private func fail(_ navigation: WKNavigation?, _ error: Error) {
+    guard (error as NSError).code != NSURLErrorCancelled else { return }
+    if navigation === bundledNavigation { showLoadFailure() }
+    else { reload() }
+  }
+  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+    fail(navigation, error)
+  }
+  func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+    fail(navigation, error)
+  }
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    reload()
+  }
+
   func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
     if response.isForMainFrame, let http = response.response as? HTTPURLResponse, http.statusCode >= 400 {
       decisionHandler(.cancel)
-      openBundledPage()
+      reload()
     } else { decisionHandler(.allow) }
   }
   func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,

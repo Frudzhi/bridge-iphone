@@ -39,6 +39,8 @@ def inline_script(match):
     path = match[1]
     code = module_imports((web / path).read_text(encoding="utf-8"), path)
     if path == "app.js":
+        code = code.replace('api("/api/today")',
+                            'api("/api/today", { signal: AbortSignal.timeout?.(8000) })')
         code = code.replace('"/lib/pdf.worker.min.mjs"',
                             json.dumps(data_url("lib/pdf.worker.min.mjs", mime="text/javascript")))
         code = code.replace('if ("serviceWorker" in navigator) navigator.serviceWorker.register',
@@ -57,8 +59,24 @@ html = (web / "index.html").read_text(encoding="utf-8")
 html = re.sub(r'<script src="/([^"?]+)(?:\?[^"]*)?"></script>', inline_script, html)
 html = re.sub(r'<link rel="stylesheet" href="/([^"?]+)(?:\?[^"]*)?">', inline_style, html)
 html = re.sub(r'<link rel="(?:manifest|icon|apple-touch-icon|preload)"[^>]*>\n?', "", html)
-html = html.replace("</head>", '<script type="importmap">' +
-                    json.dumps({"imports": modules}) + "</script>\n</head>")
+main = '<main id="app" aria-live="polite"></main>'
+style, skeleton = Path(__file__).with_name("startup-skeleton.html").read_text(encoding="utf-8").split("</style>", 1)
+html = html.replace("</head>", style + "</style>\n</head>")
+html = html.replace(main, main + skeleton + '\n<script type="importmap">' +
+                    json.dumps({"imports": modules}) + "</script>\n")
+html = html.replace("</body>", """<script>
+window.__shtabSync = () => {
+  if (!S.key || document.visibilityState !== 'visible') return;
+  void flushTasks();
+  void refreshHub();
+  if (S.view === 'rr') {
+    void rrRefresh();
+    if (S.rrTab === 'posts') void rpLoad();
+  }
+};
+setInterval(() => { if (S.offline) window.__shtabSync(); }, 15000);
+</script>
+</body>""")
 font_licenses = "\n\n".join((web / path).read_text(encoding="utf-8") for path in
                             ("fonts/OFL-Manrope.txt", "fonts/OFL-Unbounded.txt"))
 html = html.replace("</html>", "<!--\n" + re.sub(r"(?m)[ \t]+$", "", font_licenses) + "\n-->\n</html>")
